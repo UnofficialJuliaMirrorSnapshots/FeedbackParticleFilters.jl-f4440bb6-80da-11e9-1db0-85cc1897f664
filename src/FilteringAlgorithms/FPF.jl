@@ -8,14 +8,14 @@ struct FPFState{T, TF} <: AbstractFilterState
 end
 
 
-struct FPF{TS<:HiddenStateModel, TO<:ObservationModel, T<:GainEstimationMethod, TI<:FPFState} <: AbstractFilteringAlgorithm{ContinuousTime, ContinuousTime}
+struct FPF{TS<:HiddenStateModel, TO<:ObservationModel, T<:GainEstimationMethod} <: AbstractFilteringAlgorithm{ContinuousTime, ContinuousTime}
     state_model::TS
     obs_model::TO
     gain_method::T
-    init::TI
-    function FPF(st_mod::HiddenStateModel{S1, ContinuousTime}, ob_mod::ObservationModel{S1, S2, ContinuousTime}, gain_method::GainEstimationMethod, init::FPFState) where {S1, S2}
+    N::Int
+    function FPF(st_mod::HiddenStateModel{S1, ContinuousTime}, ob_mod::ObservationModel{S1, S2, ContinuousTime}, gain_method::GainEstimationMethod, N::Int) where {S1, S2}
         if ob_mod isa DiffusionObservationModel || ob_mod isa LinearDiffusionObservationModel
-            return new{typeof(st_mod), typeof(ob_mod), typeof(gain_method), typeof(init)}(st_mod, ob_mod, gain_method, init)
+            return new{typeof(st_mod), typeof(ob_mod), typeof(gain_method)}(st_mod, ob_mod, gain_method, N)
         else
             error("Error: the FPF algorithm is not defined for non-diffusion-type observations. Try ppFPF for counting process observations.")
         end
@@ -26,13 +26,14 @@ end
 
     
     
+ 
     
 #####################
 ###### METHODS ######
 #####################  
     
-initial_condition(fpf::FPF) = fpf.init
-no_of_particles(fpf::FPF) = no_of_particles(fpf.init)
+initial_condition(fpf::FPF) = fpf.state_model.init
+no_of_particles(fpf::FPF) = fpf.N
 no_of_particles(st::FPFState) = no_of_particles(st.ensemble)
 state_model(fpf::FPF) = fpf.state_model
 obs_model(fpf::FPF) = fpf.obs_model
@@ -57,10 +58,6 @@ end
 
 
 
-
-
-
-
 ######################
 ### MAIN ALGORITHM ###
 ######################
@@ -79,39 +76,44 @@ function propagate!(filter_state::FPFState, filt_algo::FPF, dt)
 end
 
 function assimilate!(dY, filter_state::FPFState, filt_algo::FPF, dt)
-    ensemble = filter_state.ensemble
-    eq       = filter_state.eq
-    method   = filt_algo.gain_method
+    ensemble  = filter_state.ensemble
+    eq        = filter_state.eq
+    method    = filt_algo.gain_method
     
-    error    = dY .- dt * eq.H/2 .- dt * eq.mean_H/2
+    error     = dY .- dt * eq.H/2 .- dt * eq.mean_H/2
     solve!(eq, method)
+    
+    heun!(eq, ensemble, error, method) # stochastic Heun method: intermediate step
+        
     applygain!(ensemble, eq, error)
     update!(eq, ensemble)
     return ensemble.positions
 end
 
 
+
     
     
     
     
     
-    
-    
-    
-    
-    
+      
 ########################
 ### HELPER FUNCTIONS ###
 ########################
+    
+function heun!(eq::PoissonEquation, ensemble::UnweightedParticleEnsemble, error::AbstractMatrix, method::GainEstimationMethod)
+    ensemble2 = deepcopy(ensemble)    
+    applygain!(ensemble2, eq, error)
+    eq2       = deepcopy(eq)
+    update!(eq2, ensemble2)
+    solve!(eq2, method)
+    eq.gain  .= (eq.gain + eq2.gain) / 2
+end    
 
 function gainxerror(gain::Array{T, 3}, error::Array{T, 2}) where T
-    size(gain, 2) == size(error, 2) ? N = size(gain, 2) : throw(DimensionMismatch("The provided gain and error are for different numbers of particles."))
-    size(gain, 3) == size(error, 1) ? m = size(gain, 3) : throw(DimensionMismatch("The provided gain and error are for different numbers of observed variables."))
     out = zeros(T, size(gain, 1), size(gain, 2))
-    @inbounds for k in 1:N, i in 1:size(gain, 1), j in 1:m
-            out[i, k] += gain[i, k, j] * error[j, k]
-    end
+    add_gainxerror!(out, gain, error)
     return out
 end
 
@@ -178,8 +180,6 @@ function FPF(filt_prob::AbstractFilteringProblem, method::GainEstimationMethod, 
     else
         error("Error: cannot build feedback particle filter for given observation model. Must be a diffusion.")
     end
-                            
-    init = FPFState(filt_prob, N)
     
-    return FPF(st_mod, ob_mod, method, init)
+    return FPF(st_mod, ob_mod, method, N)
 end

@@ -15,10 +15,11 @@ makedocs(
              "fpf.md",
         ],
         "Manual" => Any[
+             "basic.md",
              "hidden.md",
              "observation.md",
+             "algorithms.md",
              "gainest.md",
-             "reference.md",
         ],
     ],
 )
